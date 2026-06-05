@@ -1,0 +1,2 @@
+"""Vercel serverless entrypoint package."""
+

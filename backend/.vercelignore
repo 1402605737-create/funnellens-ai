@@ -1,0 +1,7 @@
+.env
+.venv
+funnellens.db
+__pycache__
+app/__pycache__
+api/__pycache__
+

@@ -1,0 +1,2 @@
+"""FunnelLens AI backend package."""
+
