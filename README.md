@@ -8,9 +8,10 @@ FunnelLens AI 会分析广告文案、落地页和投放数据，自动找出“
 
 ## 面试展示入口
 
-- 线上 Demo：部署后填写 Vercel 前端链接
-- 后端健康检查：部署后填写 Vercel 后端 `/health` 链接
-- 演示视频：部署后填写 B 站 / 飞书 / 腾讯文档 / 附件链接
+- GitHub 仓库：https://github.com/1402605737-create/funnellens-ai
+- 线上 Demo：https://funnellens-ai-web.vercel.app
+- 后端健康检查：https://funnellens-ai-api.vercel.app/health
+- 演示视频：待补充 B 站 / 飞书 / 腾讯文档 / 附件链接
 
 ## 为什么做这个
 
@@ -97,4 +98,3 @@ npm run dev
 2 分钟演示脚本见 [VIDEO_SCRIPT.md](VIDEO_SCRIPT.md)。
 
 发布前安全检查见 [SECURITY_CHECKLIST.md](SECURITY_CHECKLIST.md)。
-
