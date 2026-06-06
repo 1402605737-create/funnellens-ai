@@ -6,7 +6,7 @@ FunnelLens AI 会分析广告文案、落地页和投放数据，自动找出“
 
 ![FunnelLens AI 产品截图](frontend/funnellens-cn-screenshot.png)
 
-## 面试展示入口
+## 展示入口
 
 - GitHub 仓库：https://github.com/1402605737-create/funnellens-ai
 - 线上 Demo：https://funnellens-ai-web.vercel.app
