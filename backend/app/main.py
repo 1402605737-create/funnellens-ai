@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.agent import run_growth_audit, summarize_metrics
@@ -20,7 +21,7 @@ from app.models import (
     Workspace,
 )
 from app.sample_data import create_official_demos, render_demo_landing, reset_official_demos
-from app.security import enforce_rate_limit, require_admin
+from app.security import enforce_rate_limit, is_admin_request, require_admin
 
 
 @asynccontextmanager
@@ -177,13 +178,33 @@ async def analyze_campaign(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     campaign = load_campaign(db, campaign_id)
+    if campaign.source == "official_demo" and not is_admin_request(request):
+        if campaign.status == "analyzed":
+            return campaign_detail(campaign)
+        raise HTTPException(status_code=403, detail="官方样例为只读数据，请创建访客项目体验真实诊断。")
+
     enforce_rate_limit(db, request, "analyze_campaign", hourly_limit=3, daily_limit=10)
     now = datetime.now(UTC).replace(tzinfo=None)
-    if campaign.analysis_started_at and campaign.analysis_started_at >= now - timedelta(minutes=5):
+    stale_before = now - timedelta(minutes=5)
+    claimed = (
+        db.query(Campaign)
+        .filter(
+            Campaign.id == campaign_id,
+            or_(Campaign.analysis_started_at.is_(None), Campaign.analysis_started_at < stale_before),
+        )
+        .update(
+            {
+                Campaign.analysis_started_at: now,
+                Campaign.status: "running",
+            },
+            synchronize_session=False,
+        )
+    )
+    if not claimed:
+        db.rollback()
         raise HTTPException(status_code=409, detail="该项目正在诊断中，请稍后刷新查看结果。")
-    campaign.analysis_started_at = now
-    campaign.status = "running"
     db.commit()
+    campaign = load_campaign(db, campaign_id)
     locale = payload.locale if payload else "zh-CN"
     try:
         analyzed = await run_growth_audit(db, campaign, locale=locale)
@@ -192,15 +213,27 @@ async def analyze_campaign(
         return campaign_detail(analyzed)
     except Exception:
         db.rollback()
-        campaign = load_campaign(db, campaign_id)
-        campaign.analysis_started_at = None
-        campaign.status = "draft"
+        fallback_status = "analyzed" if campaign.diagnosis else "draft"
+        db.query(Campaign).filter(Campaign.id == campaign_id).update(
+            {
+                Campaign.analysis_started_at: None,
+                Campaign.status: fallback_status,
+            },
+            synchronize_session=False,
+        )
         db.commit()
         raise
 
 
 @app.put("/api/campaigns/{campaign_id}/metrics")
-def replace_metrics(campaign_id: int, payload: MetricsReplace, db: Session = Depends(get_db)) -> dict[str, Any]:
+def replace_metrics(
+    campaign_id: int,
+    payload: MetricsReplace,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    if not is_admin_request(request):
+        raise HTTPException(status_code=403, detail="公开体验不支持修改已创建项目的指标，请新建项目后重新诊断。")
     campaign = load_campaign(db, campaign_id)
     db.query(PerformanceMetric).filter(PerformanceMetric.campaign_id == campaign.id).delete()
     for row in payload.metrics:

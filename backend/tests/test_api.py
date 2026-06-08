@@ -61,6 +61,7 @@ def test_create_rate_limit(monkeypatch) -> None:
 def test_concurrent_analysis_returns_conflict() -> None:
     with SessionLocal() as db:
         campaign = db.query(Campaign).filter(Campaign.source == "official_demo").first()
+        campaign.source = "public"
         campaign.analysis_started_at = datetime.now(UTC).replace(tzinfo=None)
         db.commit()
         campaign_id = campaign.id
@@ -70,4 +71,39 @@ def test_concurrent_analysis_returns_conflict() -> None:
     with TestClient(main.app) as client:
         response = client.post(f"/api/campaigns/{campaign_id}/analyze", json={"locale": "zh-CN"})
 
+    with SessionLocal() as db:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        campaign.source = "official_demo"
+        campaign.analysis_started_at = None
+        db.commit()
+
     assert response.status_code == 409
+
+
+def test_official_analysis_is_read_only() -> None:
+    with SessionLocal() as db:
+        campaign = db.query(Campaign).filter(Campaign.source == "official_demo").first()
+        campaign.status = "analyzed"
+        db.commit()
+        campaign_id = campaign.id
+        run_count = len(campaign.ai_runs)
+
+    with TestClient(main.app) as client:
+        response = client.post(f"/api/campaigns/{campaign_id}/analyze", json={"locale": "en-US"})
+
+    with SessionLocal() as db:
+        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+        assert len(campaign.ai_runs) == run_count
+
+    assert response.status_code == 200
+
+
+def test_public_cannot_replace_metrics() -> None:
+    with SessionLocal() as db:
+        campaign = db.query(Campaign).first()
+        campaign_id = campaign.id
+
+    with TestClient(main.app) as client:
+        response = client.put(f"/api/campaigns/{campaign_id}/metrics", json={"metrics": []})
+
+    assert response.status_code == 403
