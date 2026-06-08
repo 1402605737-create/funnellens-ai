@@ -34,11 +34,13 @@ FunnelLens AI 的核心就是自动诊断这些断点。
 - **Agent 轨迹**：展示任务规划、落地页抓取、指标分析、DeepSeek 推理、证据记录、实验生成。
 - **证据库**：每个 AI 判断都绑定落地页证据或缺失证据。
 - **实验方案**：生成 A/B 测试 brief，包括假设、改动建议、成功指标、优先级和实现成本。
+- **五个官方样例**：覆盖 AI 编程助手、云数据库、API 监控、浏览器插件和低代码自动化。
+- **公开 Demo 防护**：开放真实 DeepSeek 诊断，同时限制频率、自动清理访客项目并阻止内网 URL 抓取。
 
 ## 技术栈
 
 - 前端：React + Vite + Recharts + lucide-react
-- 后端：FastAPI + SQLAlchemy
+- 后端：FastAPI + SQLAlchemy + Alembic
 - 数据库：本地 SQLite，线上 Supabase Free Postgres
 - AI：DeepSeek OpenAI-compatible API，默认模型 `deepseek-v4-flash`
 - 部署：Vercel 前端 + Vercel FastAPI 后端 + Supabase Free
@@ -76,7 +78,7 @@ npm run dev
 关键配置：
 
 - 前端 Vercel 环境变量：`VITE_API_BASE=https://<your-backend>.vercel.app`
-- 后端 Vercel 环境变量：`DEEPSEEK_API_KEY`、`DATABASE_URL`、`FRONTEND_ORIGIN`
+- 后端 Vercel 环境变量：`DEEPSEEK_API_KEY`、`DATABASE_URL`、`FRONTEND_ORIGIN`、`PUBLIC_API_BASE`、`RATE_LIMIT_SALT`、`ADMIN_SEED_TOKEN`
 - 数据库使用 Supabase **Transaction Pooler**，端口 `6543`
 
 线上 `/health` 应显示：

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -6,9 +6,13 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
+def utcnow() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 class TimestampMixin:
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class Workspace(TimestampMixin, Base):
@@ -41,6 +45,9 @@ class Campaign(TimestampMixin, Base):
     goal: Mapped[str] = mapped_column(String(80), default="signup")
     target_audience: Mapped[str] = mapped_column(Text, default="")
     primary_kpi: Mapped[str] = mapped_column(String(80), default="CVR")
+    source: Mapped[str] = mapped_column(String(40), default="public", index=True)
+    demo_key: Mapped[str | None] = mapped_column(String(80), unique=True, nullable=True)
+    analysis_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="draft")
     diagnosis: Mapped[str] = mapped_column(Text, default="")
     message_match_score: Mapped[float] = mapped_column(Float, default=0)
@@ -204,6 +211,15 @@ class AIAnalysisRun(TimestampMixin, Base):
     campaign: Mapped[Campaign] = relationship(back_populates="ai_runs")
 
 
+class RateLimitEvent(Base):
+    __tablename__ = "rate_limit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    visitor_hash: Mapped[str] = mapped_column(String(64), index=True)
+    action: Mapped[str] = mapped_column(String(40), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
 class EvidenceItem(TimestampMixin, Base):
     __tablename__ = "evidence_items"
 
@@ -246,4 +262,3 @@ class Experiment(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(40), default="proposed")
 
     campaign: Mapped[Campaign] = relationship(back_populates="experiments")
-

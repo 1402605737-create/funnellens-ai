@@ -206,7 +206,10 @@ async def run_growth_audit(db: Session, campaign: Campaign, locale: str = "zh-CN
 
 
 def clear_previous_analysis(db: Session, campaign: Campaign) -> None:
-    for model in [ClaimPageMapping, CreativeClaim, EvidenceItem, Recommendation, Experiment, AIAnalysisRun]:
+    task_ids = [task.id for task in campaign.agent_tasks]
+    if task_ids:
+        db.query(AgentAction).filter(AgentAction.task_id.in_(task_ids)).delete(synchronize_session=False)
+    for model in [ClaimPageMapping, CreativeClaim, EvidenceItem, Recommendation, Experiment, AIAnalysisRun, AgentTask]:
         db.query(model).filter(model.campaign_id == campaign.id).delete()
     landing_ids = [page.id for page in campaign.landing_pages]
     if landing_ids:

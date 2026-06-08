@@ -1,13 +1,16 @@
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.agent import run_growth_audit, summarize_metrics
-from app.database import get_db, init_db, settings
+from app.crawler import validate_public_url
+from app.database import get_db, init_db, run_migrations, settings
 from app.models import (
     AdAsset,
     Brand,
@@ -16,10 +19,18 @@ from app.models import (
     PerformanceMetric,
     Workspace,
 )
-from app.sample_data import create_demo_campaign
+from app.sample_data import create_official_demos, render_demo_landing, reset_official_demos
+from app.security import enforce_rate_limit, require_admin
 
 
-app = FastAPI(title="FunnelLens AI API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    run_migrations()
+    init_db()
+    yield
+
+
+app = FastAPI(title="FunnelLens AI API", version="0.1.0", lifespan=lifespan)
 
 allowed_origins = [
     origin.strip()
@@ -38,37 +49,32 @@ app.add_middleware(
 
 
 class MetricInput(BaseModel):
-    date: str
-    impressions: int = 0
-    clicks: int = 0
-    conversions: int = 0
-    spend: float = 0
-    revenue: float = 0
+    date: str = Field(max_length=20)
+    impressions: int = Field(default=0, ge=0, le=1_000_000_000)
+    clicks: int = Field(default=0, ge=0, le=1_000_000_000)
+    conversions: int = Field(default=0, ge=0, le=1_000_000_000)
+    spend: float = Field(default=0, ge=0, le=1_000_000_000)
+    revenue: float = Field(default=0, ge=0, le=1_000_000_000)
 
 
 class CampaignCreate(BaseModel):
-    brand_name: str = Field(default="Demo Brand", min_length=1)
-    campaign_name: str = Field(default="Conversion Audit", min_length=1)
-    product_category: str = ""
-    goal: str = "signup"
-    target_audience: str = ""
-    primary_kpi: str = "CVR"
-    landing_page_url: str = ""
-    ad_text: str = ""
-    metrics: list[MetricInput] = Field(default_factory=list)
+    brand_name: str = Field(default="Demo Brand", min_length=1, max_length=160)
+    campaign_name: str = Field(default="Conversion Audit", min_length=1, max_length=180)
+    product_category: str = Field(default="", max_length=120)
+    goal: str = Field(default="signup", max_length=80)
+    target_audience: str = Field(default="", max_length=1000)
+    primary_kpi: str = Field(default="CVR", max_length=80)
+    landing_page_url: str = Field(min_length=1, max_length=2048)
+    ad_text: str = Field(min_length=1, max_length=8000)
+    metrics: list[MetricInput] = Field(default_factory=list, max_length=90)
 
 
 class MetricsReplace(BaseModel):
-    metrics: list[MetricInput]
+    metrics: list[MetricInput] = Field(max_length=90)
 
 
 class AnalyzeRequest(BaseModel):
     locale: str = "zh-CN"
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    init_db()
 
 
 @app.get("/health")
@@ -82,55 +88,37 @@ def health() -> dict[str, Any]:
     }
 
 
-@app.get("/demo-landing/ad-platform", response_class=HTMLResponse)
-@app.get("/demo-landing/chinese-devtool-ad", response_class=HTMLResponse)
-def demo_ad_platform_landing() -> str:
-    return """
-    <!doctype html>
-    <html lang="zh-CN">
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>云栈 DevBox - 中文开发者的 AI 应用后端</title>
-      </head>
-      <body>
-        <main>
-          <section>
-            <h1>中文开发者的 AI 应用后端工作台</h1>
-            <p>云栈 DevBox 帮助独立开发者和小团队快速搭建认证、数据库、文件存储、任务队列和部署流水线。</p>
-            <a href="/signup">预约产品演示</a>
-          </section>
-          <section>
-            <h2>从后端模板开始构建 AI 产品</h2>
-            <p>内置中文文档、常见 SaaS 模板、API 调试台和团队权限管理，适合从 0 到 1 做 AI 应用。</p>
-          </section>
-          <section>
-            <h2>面向真实上线流程</h2>
-            <p>支持生产环境变量、日志查看、Webhook、数据库迁移和灰度发布，方便中文开发者把 demo 推到线上。</p>
-          </section>
-          <section>
-            <h2>开发者团队协作</h2>
-            <p>支持项目空间、成员角色、审计日志和工单流转，让技术团队能持续迭代产品。</p>
-          </section>
-          <section>
-            <h2>客户案例</h2>
-            <p>多个中文 AI 工具团队使用云栈 DevBox 缩短后端搭建周期，并把更多时间放到核心产品体验上。</p>
-            <a href="/signup">开始搭建</a>
-          </section>
-        </main>
-      </body>
-    </html>
-    """
+@app.get("/demo-landing/{demo_key}", response_class=HTMLResponse)
+def demo_landing(demo_key: str) -> str:
+    html = render_demo_landing(demo_key)
+    if not html:
+        raise HTTPException(status_code=404, detail="Demo landing page not found")
+    return html
 
 
 @app.get("/api/campaigns")
 def list_campaigns(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    campaigns = db.query(Campaign).order_by(Campaign.created_at.desc()).all()
+    cleanup_public_projects(db)
+    official = db.query(Campaign).filter(Campaign.source == "official_demo").order_by(Campaign.demo_key).all()
+    public = (
+        db.query(Campaign)
+        .filter(Campaign.source == "public")
+        .order_by(Campaign.created_at.desc())
+        .limit(15)
+        .all()
+    )
+    campaigns = official + public
     return [campaign_summary(campaign) for campaign in campaigns]
 
 
 @app.post("/api/campaigns")
-def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)) -> dict[str, Any]:
+def create_campaign(payload: CampaignCreate, request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    enforce_rate_limit(db, request, "create_campaign", hourly_limit=10)
+    try:
+        landing_page_url = validate_public_url(payload.landing_page_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     workspace = db.query(Workspace).first()
     if not workspace:
         workspace = Workspace(name="Growth Lab")
@@ -147,12 +135,13 @@ def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)) -> d
         goal=payload.goal,
         target_audience=payload.target_audience,
         primary_kpi=payload.primary_kpi,
+        source="public",
     )
     db.add(campaign)
     db.flush()
 
     db.add(AdAsset(campaign_id=campaign.id, asset_type="copy", source_label="Manual creative input", content=payload.ad_text))
-    db.add(LandingPage(campaign_id=campaign.id, label="Primary landing page", url=payload.landing_page_url))
+    db.add(LandingPage(campaign_id=campaign.id, label="Primary landing page", url=landing_page_url))
     for row in payload.metrics:
         db.add(PerformanceMetric(campaign_id=campaign.id, **row.model_dump()))
 
@@ -163,8 +152,15 @@ def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)) -> d
 
 @app.post("/api/demo")
 def create_demo(db: Session = Depends(get_db)) -> dict[str, Any]:
-    campaign = create_demo_campaign(db)
-    return campaign_detail(campaign)
+    campaigns = create_official_demos(db)
+    return campaign_detail(campaigns[0])
+
+
+@app.post("/api/admin/reset-demo")
+def reset_demo(request: Request, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    require_admin(request)
+    campaigns = reset_official_demos(db)
+    return [campaign_summary(campaign) for campaign in campaigns]
 
 
 @app.get("/api/campaigns/{campaign_id}")
@@ -176,13 +172,31 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db)) -> dict[str, A
 @app.post("/api/campaigns/{campaign_id}/analyze")
 async def analyze_campaign(
     campaign_id: int,
+    request: Request,
     payload: AnalyzeRequest | None = None,
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     campaign = load_campaign(db, campaign_id)
+    enforce_rate_limit(db, request, "analyze_campaign", hourly_limit=3, daily_limit=10)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    if campaign.analysis_started_at and campaign.analysis_started_at >= now - timedelta(minutes=5):
+        raise HTTPException(status_code=409, detail="该项目正在诊断中，请稍后刷新查看结果。")
+    campaign.analysis_started_at = now
+    campaign.status = "running"
+    db.commit()
     locale = payload.locale if payload else "zh-CN"
-    analyzed = await run_growth_audit(db, campaign, locale=locale)
-    return campaign_detail(analyzed)
+    try:
+        analyzed = await run_growth_audit(db, campaign, locale=locale)
+        analyzed.analysis_started_at = None
+        db.commit()
+        return campaign_detail(analyzed)
+    except Exception:
+        db.rollback()
+        campaign = load_campaign(db, campaign_id)
+        campaign.analysis_started_at = None
+        campaign.status = "draft"
+        db.commit()
+        raise
 
 
 @app.put("/api/campaigns/{campaign_id}/metrics")
@@ -211,6 +225,8 @@ def campaign_summary(campaign: Campaign) -> dict[str, Any]:
         "brand": campaign.brand.name,
         "category": campaign.brand.category,
         "goal": campaign.goal,
+        "source": campaign.source,
+        "demo_key": campaign.demo_key,
         "status": campaign.status,
         "created_at": campaign.created_at.isoformat(),
         "scores": score_payload(campaign),
@@ -376,3 +392,12 @@ def score_payload(campaign: Campaign) -> dict[str, float]:
         "mobile_readiness": campaign.mobile_readiness_score,
         "experiment_priority": campaign.experiment_priority_score,
     }
+
+
+def cleanup_public_projects(db: Session) -> None:
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=settings.public_project_ttl_hours)
+    expired = db.query(Campaign).filter(Campaign.source == "public", Campaign.created_at < cutoff).all()
+    for campaign in expired:
+        db.delete(campaign)
+    if expired:
+        db.commit()

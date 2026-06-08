@@ -1,5 +1,7 @@
+import ipaddress
 import re
-from urllib.parse import urlparse
+import socket
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -15,6 +17,29 @@ def normalize_url(url: str) -> str:
     return cleaned
 
 
+def validate_public_url(url: str) -> str:
+    normalized = normalize_url(url)
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("落地页只支持 HTTP 或 HTTPS 地址。")
+    if not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("落地页 URL 格式无效。")
+
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname == "localhost" or hostname.endswith(".local"):
+        raise ValueError("为保护公开 Demo，不能抓取本机或内网地址。")
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))}
+    except socket.gaierror as exc:
+        raise ValueError("无法解析落地页域名。") from exc
+
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        if not ip.is_global:
+            raise ValueError("为保护公开 Demo，不能抓取本机、内网或保留地址。")
+    return normalized
+
+
 def clean_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text or "").strip()
     return text
@@ -26,22 +51,23 @@ def truncate(text: str, limit: int) -> str:
 
 
 async def fetch_landing_page(url: str) -> dict:
-    normalized_url = normalize_url(url)
-    if not normalized_url:
+    try:
+        normalized_url = validate_public_url(url)
+    except ValueError as exc:
         return {
-            "url": "",
-            "final_url": "",
+            "url": normalize_url(url),
+            "final_url": normalize_url(url),
             "status_code": 0,
             "title": "",
             "text": "",
             "html_excerpt": "",
             "sections": [],
-            "error": "Landing page URL is empty.",
+            "error": str(exc),
         }
 
     try:
         async with httpx.AsyncClient(
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=18,
             headers={
                 "User-Agent": (
@@ -50,7 +76,18 @@ async def fetch_landing_page(url: str) -> dict:
                 )
             },
         ) as client:
-            response = await client.get(normalized_url)
+            current_url = normalized_url
+            for _ in range(6):
+                response = await client.get(current_url)
+                if response.is_redirect:
+                    target = response.headers.get("location")
+                    if not target:
+                        break
+                    current_url = validate_public_url(urljoin(current_url, target))
+                    continue
+                break
+            else:
+                raise ValueError("落地页跳转次数过多。")
     except Exception as exc:
         return {
             "url": normalized_url,
@@ -111,4 +148,3 @@ async def fetch_landing_page(url: str) -> dict:
         "sections": sections,
         "error": "",
     }
-

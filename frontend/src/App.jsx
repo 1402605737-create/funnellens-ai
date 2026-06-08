@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   BadgeCheck,
@@ -12,20 +12,14 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  X,
   ShieldCheck,
   Sparkles,
   Target,
   Wand2,
 } from 'lucide-react';
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
+
+const MetricsView = lazy(() => import('./MetricsView.jsx'));
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
 
@@ -53,9 +47,18 @@ const copyBook = {
     runAudit: '运行诊断',
     auditing: '诊断中',
     createDemo: '载入中文广告样例',
+    refresh: '刷新项目列表',
     campaigns: '广告项目',
+    officialSamples: '官方样例',
+    visitorProjects: '访客项目',
     noCampaigns: '暂无广告项目',
     newAudit: '新建诊断',
+    openNewAudit: '新建公开诊断',
+    close: '关闭',
+    loadingProjects: '正在连接线上数据库并加载项目...',
+    publicNotice: '公开体验环境：访客项目会被他人看到并在 24 小时后自动清理，请勿提交敏感信息。',
+    auditingHint: 'Agent 正在抓取落地页、调用 DeepSeek 并生成证据链，通常需要 20–50 秒。',
+    englishRerun: '当前结果可能由中文诊断生成；切换语言后请重新运行诊断以生成英文结果。',
     create: '创建项目',
     eyebrow: '广告素材 × 落地页',
     workspaceTitle: '广告转化诊断工作台',
@@ -152,9 +155,18 @@ const copyBook = {
     runAudit: 'Run Audit',
     auditing: 'Auditing',
     createDemo: 'Load demo campaign',
+    refresh: 'Refresh projects',
     campaigns: 'Campaigns',
+    officialSamples: 'Official demos',
+    visitorProjects: 'Visitor projects',
     noCampaigns: 'No campaigns yet.',
     newAudit: 'New Audit',
+    openNewAudit: 'New public audit',
+    close: 'Close',
+    loadingProjects: 'Connecting to the online database and loading projects...',
+    publicNotice: 'Public demo: visitor projects are visible to others and removed after 24 hours. Do not submit sensitive data.',
+    auditingHint: 'The agent is crawling the page, calling DeepSeek, and building evidence. This usually takes 20–50 seconds.',
+    englishRerun: 'The current result may have been generated in Chinese. Run the audit again to generate an English result.',
     create: 'Create',
     eyebrow: 'Ad creative × landing page',
     workspaceTitle: 'Funnel audit workspace',
@@ -254,8 +266,9 @@ function App() {
   const [campaigns, setCampaigns] = useState([]);
   const [campaign, setCampaign] = useState(null);
   const [activeTab, setActiveTab] = useState('audit');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
   const [error, setError] = useState('');
   const [form, setForm] = useState({
     brand_name: '云栈 DevBox',
@@ -264,7 +277,7 @@ function App() {
     goal: 'signup',
     target_audience: '中文独立开发者、AI 应用创业团队、增长工程师',
     primary_kpi: 'CVR',
-    landing_page_url: `${API_BASE}/demo-landing/chinese-devtool-ad`,
+    landing_page_url: `${API_BASE}/demo-landing/cloud-database`,
     ad_text:
       '10 分钟搭好 AI 应用后端。\n专为中文开发者和独立产品团队设计。\n7 天免费试用，无需信用卡。\n用一套模板把部署成本降低 30%。',
     metrics_csv: defaultMetrics,
@@ -276,16 +289,18 @@ function App() {
 
   useEffect(() => {
     localStorage.setItem('funnellens_locale', locale);
+    document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
   }, [locale]);
 
-  async function boot() {
+  async function boot(preferredId) {
     setLoading(true);
     setError('');
     try {
       const list = await api('/api/campaigns');
       setCampaigns(list);
       if (list.length) {
-        await loadCampaign(list[0].id);
+        const selected = list.find((item) => item.id === preferredId) || list[0];
+        await loadCampaign(selected.id);
       }
     } catch (err) {
       setError(err.message);
@@ -297,20 +312,6 @@ function App() {
   async function loadCampaign(id) {
     const detail = await api(`/api/campaigns/${id}`);
     setCampaign(detail);
-  }
-
-  async function createDemo() {
-    setLoading(true);
-    setError('');
-    try {
-      const detail = await api('/api/demo', { method: 'POST' });
-      setCampaign(detail);
-      await boot();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
   }
 
   async function createCampaign(event) {
@@ -328,7 +329,8 @@ function App() {
         body: JSON.stringify(payload),
       });
       setCampaign(detail);
-      await boot();
+      setFormOpen(false);
+      await boot(detail.id);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -356,6 +358,8 @@ function App() {
 
   const currentTask = campaign?.agent_tasks?.[0];
   const metricRows = useMemo(() => buildMetricRows(campaign?.metrics || []), [campaign]);
+  const officialCampaigns = useMemo(() => campaigns.filter((item) => item.source === 'official_demo'), [campaigns]);
+  const publicCampaigns = useMemo(() => campaigns.filter((item) => item.source !== 'official_demo'), [campaigns]);
   const firstPage = campaign?.landing_pages?.[0];
   const latestSnapshot = firstPage?.snapshots?.[0];
   const adText = campaign?.ad_assets?.[0]?.content || '';
@@ -387,15 +391,34 @@ function App() {
             {analyzing ? <Loader2 className="spin" size={18} /> : <Wand2 size={18} />}
             <span>{analyzing ? copy.auditing : copy.runAudit}</span>
           </button>
-          <button className="icon-action" onClick={createDemo} disabled={loading} title={copy.createDemo}>
-            <RefreshCw size={17} />
+          <button className="icon-action" onClick={() => boot(campaign?.id)} disabled={loading} title={copy.refresh}>
+            {loading ? <Loader2 className="spin" size={17} /> : <RefreshCw size={17} />}
           </button>
         </div>
 
+        <label className="mobile-campaign-picker">
+          <span>{copy.campaigns}</span>
+          <select value={campaign?.id || ''} onChange={(event) => loadCampaign(Number(event.target.value))}>
+            {officialCampaigns.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            {publicCampaigns.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+        </label>
+
         <section className="campaign-list">
-          <div className="section-label">{copy.campaigns}</div>
+          <div className="section-label">{copy.officialSamples}</div>
           {campaigns.length === 0 && <p className="empty-text">{copy.noCampaigns}</p>}
-          {campaigns.map((item) => (
+          {officialCampaigns.map((item) => (
+            <button
+              key={item.id}
+              className={`campaign-row ${campaign?.id === item.id ? 'active' : ''}`}
+              onClick={() => loadCampaign(item.id)}
+            >
+              <span>{item.name}</span>
+              <small>{item.brand}</small>
+            </button>
+          ))}
+          {publicCampaigns.length > 0 && <div className="section-label visitor-label">{copy.visitorProjects}</div>}
+          {publicCampaigns.map((item) => (
             <button
               key={item.id}
               className={`campaign-row ${campaign?.id === item.id ? 'active' : ''}`}
@@ -407,8 +430,19 @@ function App() {
           ))}
         </section>
 
-        <form className="create-panel" onSubmit={createCampaign}>
-          <div className="section-label">{copy.newAudit}</div>
+        <button className="secondary-action mobile-new-audit" type="button" onClick={() => setFormOpen(true)}>
+          <Plus size={17} />
+          <span>{copy.openNewAudit}</span>
+        </button>
+
+        <form className={`create-panel ${formOpen ? 'open' : ''}`} onSubmit={createCampaign}>
+          <div className="form-heading">
+            <div className="section-label">{copy.newAudit}</div>
+            <button className="form-close" type="button" onClick={() => setFormOpen(false)} title={copy.close}>
+              <X size={18} />
+            </button>
+          </div>
+          <p className="public-notice">{copy.publicNotice}</p>
           <Input label={copy.form.brand} value={form.brand_name} onChange={(value) => setForm({ ...form, brand_name: value })} />
           <Input label={copy.form.campaign} value={form.campaign_name} onChange={(value) => setForm({ ...form, campaign_name: value })} />
           <Input label={copy.form.category} value={form.product_category} onChange={(value) => setForm({ ...form, product_category: value })} />
@@ -449,8 +483,15 @@ function App() {
         </header>
 
         {error && <div className="error-banner">{error}</div>}
+        {analyzing && <div className="progress-banner"><Loader2 className="spin" size={18} /><span>{copy.auditingHint}</span></div>}
+        {locale === 'en' && campaign?.status === 'analyzed' && <div className="language-hint">{copy.englishRerun}</div>}
 
-        {campaign ? (
+        {loading && !campaign ? (
+          <section className="empty-state loading-state">
+            <Loader2 className="spin" size={28} />
+            <h3>{copy.loadingProjects}</h3>
+          </section>
+        ) : campaign ? (
           <>
             <section className="score-band">
               <ScoreCard label={copy.scores.message_match} value={campaign.scores.message_match} icon={Target} tone="good" />
@@ -500,7 +541,11 @@ function App() {
               {activeTab === 'trace' && <TraceView task={currentTask} copy={copy} />}
               {activeTab === 'evidence' && <EvidenceView items={campaign.evidence_items} copy={copy} />}
               {activeTab === 'experiments' && <ExperimentsView experiments={campaign.experiments} recommendations={campaign.recommendations} copy={copy} />}
-              {activeTab === 'metrics' && <MetricsView rows={metricRows} summary={campaign.metrics_summary} />}
+              {activeTab === 'metrics' && (
+                <Suspense fallback={<EmptyPanel icon={Loader2} text={copy.loadingProjects} />}>
+                  <MetricsView rows={metricRows} summary={campaign.metrics_summary} />
+                </Suspense>
+              )}
             </section>
           </>
         ) : (
@@ -508,7 +553,7 @@ function App() {
             <FileSearch size={28} />
             <h3>{copy.readyTitle}</h3>
             <p>{copy.readyBody}</p>
-            <button className="primary-action" onClick={createDemo}>
+            <button className="primary-action" onClick={() => boot()}>
               <RefreshCw size={17} />
               <span>{copy.createDemo}</span>
             </button>
@@ -694,40 +739,6 @@ function ExperimentsView({ experiments, recommendations, copy }) {
   );
 }
 
-function MetricsView({ rows, summary }) {
-  return (
-    <div className="metrics-layout">
-      <div className="metric-summary">
-        <MetricBox label="CTR" value={summary?.ctr_percent || '0.00%'} />
-        <MetricBox label="CVR" value={summary?.cvr_percent || '0.00%'} />
-        <MetricBox label="CPA" value={summary?.cpa ?? 'n/a'} />
-        <MetricBox label="ROAS" value={summary?.roas ?? 0} />
-      </div>
-      <div className="chart-panel">
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={rows} margin={{ top: 20, right: 20, left: 0, bottom: 10 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#d8dee6" />
-            <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-            <YAxis tick={{ fontSize: 12 }} />
-            <Tooltip />
-            <Line type="monotone" dataKey="cvr" stroke="#2563eb" strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey="ctr" stroke="#0f766e" strokeWidth={2} dot={false} />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  );
-}
-
-function MetricBox({ label, value }) {
-  return (
-    <div className="metric-box">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
 function EmptyPanel({ icon: Icon, text }) {
   return (
     <div className="inline-empty">
@@ -747,7 +758,13 @@ async function api(path, options = {}) {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Request failed: ${response.status}`);
+    try {
+      const parsed = JSON.parse(text);
+      throw new Error(parsed.detail || `Request failed: ${response.status}`);
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new Error(text || `Request failed: ${response.status}`);
+      throw error;
+    }
   }
   return response.json();
 }

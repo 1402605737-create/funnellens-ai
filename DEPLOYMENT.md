@@ -38,7 +38,14 @@ git push -u origin main
 DATABASE_URL=postgresql+psycopg://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require
 ```
 
-不用在 Supabase 里手动建表。后端启动时会通过 SQLAlchemy 自动创建 MVP 表结构。
+后端冷启动会对已有数据库执行 Alembic 迁移；如果本机已经安全配置 `DATABASE_URL`，也可以在 `backend` 目录手动执行：
+
+```powershell
+alembic upgrade head
+python scripts/seed_official_demos.py --clear-all --analyze
+```
+
+迁移负责升级已有 Supabase 表结构；样例脚本会幂等创建五个官方样例。`--clear-all` 会清理公开体验数据，只应在重置 Demo 时使用。Vercel 加密环境变量无法被 CLI 拉回本机时，先部署后端并访问 `/health` 触发迁移，再使用带 `X-Admin-Token` 的 `/api/admin/reset-demo` 重建样例。
 
 常见坑：
 
@@ -70,6 +77,9 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DATABASE_URL=<supabase-transaction-pooler-url>
 FRONTEND_ORIGIN=https://<your-frontend>.vercel.app
+PUBLIC_API_BASE=https://<your-backend>.vercel.app
+RATE_LIMIT_SALT=<long-random-secret>
+ADMIN_SEED_TOKEN=<long-random-secret>
 ```
 
 部署后验证：
